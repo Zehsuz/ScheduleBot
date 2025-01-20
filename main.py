@@ -10,6 +10,7 @@ import sys
 from threading import Thread
 from time import sleep
 import telebot
+from Cython.Compiler.Errors import message
 from telebot import types
 import time
 import threading
@@ -18,7 +19,7 @@ import datetime
 # import traceback
 
 # Константы и настройки
-TOKEN = 'YOUR_BOT_TOKEN'
+TOKEN = 'YOUR_TOKEN'
 DATABASE = 'users.db'
 BUTTONS = {
     'today':types.KeyboardButton(text='Расписание на сегодня'),
@@ -133,25 +134,38 @@ def load_schedule_for_day(day_type):
     today = datetime.date.today()
 
     # Определяем текущий день и неделю для запроса
-    current_week = today.isocalendar()[1] if day_type == 'today' else \
-        (today + datetime.timedelta(days=1)).isocalendar()[1]
+    current_week = today.isocalendar()[1] if day_type == 'today' else (today + datetime.timedelta(days=1)).isocalendar()[1]
     week_type = get_week_type(current_week)
     day_name = schedule_today() if day_type == 'today' else schedule_tomorrow()
 
     # Проверяем, есть ли замена для этого дня
-    if check_replacement(day_name, week_type):
-        schedule = f"Есть замена на {day_name} ({week_type})"
+    replacement_day_name = 'пусто'
+    if os.path.exists('replacement_tomorrow.txt'):
+        with open('replacement_tomorrow.txt', 'r', encoding='utf-8') as file:
+            replacement_day_name = file.readline().strip()
+        print(f"Заменяющий день: {replacement_day_name}")
     else:
-        try:
-            if day_name != 'Воскресенье':
-                with open(f'days/{day_name}_{week_type}.txt',
-                          'r',
-                          encoding='utf-8') as file:
-                    schedule = file.read()
-            else:
-                schedule = f"{'Сегодня' if day_type == 'today' else 'Завтра'} воскресенье, спи спокойно"
-        except FileNotFoundError:
-            schedule = "Расписание не найдено."
+        print(f"Нет замены")
+
+    # Если день совпадает с днем из замены, или файл замены существует
+    if day_name.lower() == replacement_day_name.lower() and os.path.exists('replacement_tomorrow.txt'):
+        with open('replacement_tomorrow.txt', 'r', encoding='utf-8') as file:
+            schedule = file.read()
+        return
+
+    try:
+        # Загружаем расписание на день
+        if day_name:
+            file_path = f'days/{day_name}_{week_type}.txt'
+            with open(file_path, 'r', encoding='utf-8') as file:
+                schedule = file.read()
+                return
+        else:
+            schedule = f"Воскресенье, спи спокойно"
+            return
+
+    except FileNotFoundError:
+        schedule = "Расписание не найдено."
 
 
 # Работа с базой данных
@@ -565,7 +579,6 @@ def handle_replacement_details(message):
     else:
         handle_create_replacement(message)
 
-
 @bot.message_handler(func=lambda message: message.text.lower() == 'изменить замену на завтра')
 def edit_replacement(message):
     load_schedule_for_day('tomorrow')
@@ -598,7 +611,7 @@ def process_new_replacement(message):
     new_replacement_text = message.text
     # Сохраняем новую замену в файл
     with open('replacement_tomorrow.txt', 'w', encoding='utf-8') as file:
-        file.write(new_replacement_text)
+        file.write(schedule_tomorrow() + '\n' + new_replacement_text)
     global notf_users
     conn, cursor = get_connection()
     cursor.execute("SELECT * FROM users")
@@ -630,8 +643,7 @@ def process_new_replacement(message):
     bot.send_message(chat_id, "Замена на завтра успешно обновлена.")
 
 
-@bot.message_handler(
-    func=lambda message: message.text.lower() == 'отменить замену на завтра')
+@bot.message_handler(func=lambda message: message.text.lower() == 'отменить замену на завтра')
 def cancel_replacement(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -652,33 +664,7 @@ def cancel_replacement(message):
         else:
             bot.send_message(chat_id, "Замена на завтра не была установлена.")
 
-
-def load_schedule_for_day(day_type):
-    global schedule
-    today = datetime.date.today()
-    current_week = today.isocalendar()[1] if day_type == 'today' else \
-    (today + datetime.timedelta(days=1)).isocalendar()[1]
-    week_type = get_week_type(current_week)
-    day_name = schedule_today() if day_type == 'today' else schedule_tomorrow()
-
-    # Проверка на замену
-    replacement_file = 'replacement_tomorrow.txt'
-    if day_type == 'tomorrow' and os.path.exists(replacement_file):
-        with open(replacement_file, 'r', encoding='utf-8') as file:
-            schedule = file.read()
-    else:
-        try:
-            if day_name != 'Воскресенье':
-                with open(f'days/{day_name}_{week_type}.txt', 'r', encoding='utf-8') as file:
-                    schedule = file.read()
-            else:
-                schedule = 'Сегодня воскресенье, спи спокойно'
-        except FileNotFoundError:
-            schedule = "Расписание не найдено."
-
-
-@bot.message_handler(
-    func=lambda message: message.text.lower() == 'снять замену сегодня')
+@bot.message_handler(func=lambda message: message.text.lower() == 'снять замену сегодня')
 def remove_replacement_today(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -910,7 +896,7 @@ def today_schedule(message):
     if schedule_today() == "Воскресенье":
         bot.send_message(chat_id, "Сегодня воскресенье. Расписания нет.")
     else:
-        bot.send_message(chat_id, f"Сегодня {schedule}")
+        bot.send_message(chat_id, f"Сегодня \n {schedule}")
         print(f'расписание отправлено пользователю {chat_id}, в {datetime.datetime.now().time()} расписание на сегодня \n{schedule}')
 
 
@@ -923,6 +909,7 @@ def tomorrow_schedule(message):
     chat_id = message.chat.id
     if schedule_tomorrow() == "Воскресенье":
         bot.send_message(chat_id, "Завтра воскресенье. Расписания нет.")
+        return
     else:
         if schedule == 'Замен на завтра нет.':
             os.remove('replacement_tomorrow.txt')
@@ -940,39 +927,38 @@ def tomorrow_schedule(message):
     print(f'расписание отправлено пользователю {chat_id}, в {datetime.datetime.now().time()} расписание на завтра \n{schedule}')
 
 
+# Функция для работы с заменой
+def delete_replacement():
+    if os.path.exists('replacement_tomorrow.txt'):
+        os.remove('replacement_tomorrow.txt')
+        conn, cursor = get_connection()
+        cursor.execute("INSERT OR REPLACE INTO replacements (day, week_type, has_replacement) VALUES (?, ?, ?)",
+                       ("Сегодня", get_week_type(datetime.date.today().isocalendar()[1]), 0))
+        conn.commit()
+        close_connection(conn, cursor)
+        print("Замена удалена и данные обновлены.")
+
+
+# Глобальные переменные для хранения расписания
+morning_schedule = ""
+evening_schedule = ""
+
 def get_morning_message():
+    global morning_schedule  # Объявляем переменную как глобальную
+    # Здесь код для получения утреннего расписания
     load_schedule_for_day('today')
-    print(schedule)
-    sleep(3)
-    return schedule
+    print(f"Утреннее сообщение: {morning_schedule}")  # Выводим для проверки
+    return morning_schedule
 
 
 def get_evening_message():
+    global evening_schedule  # Объявляем переменную как глобальную
+    # Здесь код для получения вечернего расписания
     load_schedule_for_day('tomorrow')
-    print(schedule)
-    sleep(3)
-    return schedule
+    print(f"Вечернее сообщение: {evening_schedule}")  # Выводим для проверки
+    return evening_schedule
 
-
-def print_message_at_time(target_hour, target_minute, message_function):
-    global schedule
-    # Функция для ожидания времени и вывода сообщения в консоль
-    while True:
-        now = datetime.datetime.now()
-        target_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-
-        # Если время уже прошло, устанавливаем на следующий день
-        if now > target_time:
-            target_time += datetime.timedelta(days=1)
-
-        time_to_wait = (target_time - now).total_seconds()
-        time.sleep(time_to_wait)  # Задержка до нужного времени
-
-        # Получаем сообщение из переданной функции
-        to_send()
-        print(f"расписание отправлено, \nВремя: {datetime.datetime.now().strftime('%H:%M:%S')} {schedule}")
-
-
+# Функция для отправки сообщения
 def to_send():
     global schedule
     conn, cursor = get_connection()
@@ -996,47 +982,85 @@ def to_send():
             logging.error(f"Ошибка при отправке сообщения: {e}")
 
 
-def delete_replacement():
-    if os.path.exists('replacement_tomorrow.txt'):
-        os.remove('replacement_tomorrow.txt')
-        conn, cursor = get_connection()
-        cursor.execute("INSERT OR REPLACE INTO replacements (day, week_type, has_replacement) VALUES (?, ?, ?)",
-            ("Сегодня", get_week_type(datetime.date.today().isocalendar()[1]), 0))
-        conn.commit()
-        close_connection(conn, cursor)
+# Функция для вычисления времени до следующего события
+def time_until_target(target_hour, target_minute):
+    now = datetime.datetime.now()
+    target_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    if now > target_time:
+        target_time += datetime.timedelta(days=1)  # если время прошло, устанавливаем на следующий день
+    time_to_wait = (target_time - now).total_seconds()  # Сколько времени ждать до следующего события
+    return time_to_wait
 
 
+# Функция для проверки времени и запуска уведомлений
+def check_and_send_notifications():
+    # Время для утреннего уведомления (например, 6:00)
+    morning_target_hour = 17
+    morning_target_minute = 57
+
+    # Время для вечернего уведомления (например, 17:00)
+    evening_target_hour = 17
+    evening_target_minute = 58
+
+    # Флаг, чтобы не отправлять сообщение сразу
+    first_run = True
+
+    while True:
+        # Вычисляем время до утреннего и вечернего уведомлений
+        time_to_evening = time_until_target(morning_target_hour, morning_target_minute)
+        time_to_morning = time_until_target(evening_target_hour, evening_target_minute)
+
+        # Сравниваем, какое уведомление будет раньше
+        if time_to_morning < time_to_evening:
+            # Если утреннее уведомление ближе, запускаем его
+            if not first_run:
+                schedule = get_morning_message()
+                to_send()
+            time.sleep(time_to_morning)  # Засыпаем до утра
+        else:
+            # Если вечернее уведомление ближе, запускаем его
+            if not first_run:
+                schedule = get_evening_message()
+                to_send()
+            time.sleep(time_to_evening)  # Засыпаем до вечера
+
+        first_run = False
+
+
+# Основная функция для запуска всех потоков
+def start_scheduled_messages():
+    # Сначала удаляем возможную замену
+    delete_replacement()
+
+    # Запуск основного потока для проверки и отправки уведомлений
+    threading.Thread(target=check_and_send_notifications).start()
+
+    # Запуск потока для удаления замены по расписанию
+    threading.Thread(target=wait_for_target_time, args=(11, 0)).start()  # 14.00 обновление таймера
+
+    # Так как время на сервере -3 по МСК то время смещено
+    threading.Thread(target=monitor_server).start()  # Мониторинг сервера раз в 6 часов
+
+# Функция для удаления замены
 def wait_for_target_time(target_hour, target_minute):
     while True:
         now = datetime.datetime.now()
         target_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-
-        # Если текущее время уже прошло, устанавливаем целевое время на следующий день
         if now > target_time:
             target_time += datetime.timedelta(days=1)
 
-        # Рассчитываем, сколько секунд осталось до целевого времени
         time_to_wait = (target_time - now).total_seconds()
         print(f"Ожидаем {time_to_wait} секунд до следующего вызова.")
-        time.sleep(time_to_wait)  # Ожидаем до нужного времени
+        time.sleep(time_to_wait)
 
-        # Время пришло, вызываем функцию удаления замены
         delete_replacement()
-
-
-def start_scheduled_messages():
-    # Запуск двух потоков для вывода сообщения в 6:00 и 17:00
-    Thread(target=print_message_at_time, args=(6, 0, get_morning_message())).start()  # 6:00 отправка уведомления что будет сегодня
-    Thread(target=print_message_at_time, args=(17, 0, get_evening_message())).start()  # 17:00 отправка уведомления вечером что будет завтра
-    Thread(target=wait_for_target_time, args=(14, 0)).start()  # 14.00 обновление таймера
-    threading.Thread(target=monitor_server).start()     # Мониторинг сервера раз в 6 часов
 
 # Функция для мониторинга сервера
 def monitor_server():
     while True:
         try:
             bot.send_message(CHAT_ID, 'Отец, я живой')
-            time.sleep(21600)  # Ждать 6 часов, чтобы уведомить создателя, что бот работает
+            time.sleep(3600)  # Ждать 6 часов, чтобы уведомить создателя, что бот работает
         except Exception as e:
             print('Ошибка при отправке уведомления что бот активен')
 # Запуск
@@ -1055,8 +1079,10 @@ while True:
         # #Логируем ошибку
         # error_message = f"Ошибка при запуске polling: {str(e)}\n{traceback.format_exc()}"
         # logging.error(error_message)
+        #
         # # Отправляем уведомление в Telegram
         # send_error_notification(error_message)
 
         # Ждем 5 секунд перед перезапуском
         time.sleep(5)
+
